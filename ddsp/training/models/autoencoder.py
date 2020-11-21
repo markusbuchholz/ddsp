@@ -38,19 +38,18 @@ class Autoencoder(Model):
 
   def encode(self, features, training=True):
     """Get conditioning by preprocessing then encoding."""
-    if self.preprocessor is not None:
-      conditioning = self.preprocessor(features, training=training)
-    else:
-      conditioning = features
+    conditioning = (features if self.preprocessor is None
+                    else self.preprocessor(features, training=training))
     if self.encoder is not None:
-      z_dict = self.encoder(conditioning)
-      conditioning.update(z_dict)
+      encoder_out = self.encoder(conditioning)
+      conditioning.update(encoder_out)
     return conditioning
 
   def decode(self, conditioning, training=True):
     """Get generated audio by decoding than processing."""
-    processor_inputs = self.decoder(conditioning, training=training)
-    return self.processor_group(processor_inputs)
+    pg_in = self.decoder(conditioning, training=training)
+    pg_in.update(conditioning)
+    return self.processor_group(pg_in)
 
   def get_audio_from_outputs(self, outputs):
     """Extract audio output tensor from outputs dict of call()."""
@@ -59,8 +58,9 @@ class Autoencoder(Model):
   def call(self, features, training=True):
     """Run the core of the network, get predictions and loss."""
     conditioning = self.encode(features, training=training)
-    processor_inputs = self.decoder(conditioning, training=training)
-    outputs = self.processor_group.get_controls(processor_inputs)
+    pg_in = self.decoder(conditioning, training=training)
+    pg_in.update(conditioning)
+    outputs = self.processor_group.get_controls(pg_in)
     outputs['audio_synth'] = self.processor_group.get_signal(outputs)
     if training:
       self._update_losses_dict(

@@ -13,50 +13,52 @@
 # limitations under the License.
 
 # Lint as: python3
-"""Library of encoder objects."""
+"""Library of decoder layers."""
 
-from ddsp import core
 from ddsp.training import nn
 import gin
-import tensorflow.compat.v2 as tf
+import tensorflow as tf
 
 tfkl = tf.keras.layers
 
 
 # ------------------ Decoders --------------------------------------------------
-class Decoder(tfkl.Layer):
-  """Base class to implement any decoder.
-
-  Users should override decode() to define the actual encoder structure.
-  Hyper-parameters will be passed through the constructor.
-  """
+class OutputSplitsLayer(nn.DictLayer):
+  """Takes in several tensors, gets single tensor back, splits to dictionary."""
 
   def __init__(self,
+               input_keys=None,
                output_splits=(('amps', 1), ('harmonic_distribution', 40)),
-               name=None):
-    super().__init__(name=name)
+               **kwargs):
+    """Constructor.
+
+    Args:
+      input_keys: A list of keys to read out of a dictionary passed to call().
+        If no input_keys are provided to the constructor, they are inferred from
+        the argument names in compute_outputs().
+      output_splits: A list of tuples (output_key, n_channels). Output keys are
+        extracted from the list and the output tensor from compute_output(), is
+        split into a dictionary of tensors, each with its matching n_channels.
+      **kwargs: Other tf.keras.layer kwargs, such as name.
+    """
     self.output_splits = output_splits
     self.n_out = sum([v[1] for v in output_splits])
+    input_keys = input_keys or self.get_argument_names('compute_output')
+    output_keys = [v[0] for v in output_splits]
+    super().__init__(input_keys=input_keys, output_keys=output_keys, **kwargs)
 
-  def call(self, conditioning):
-    """Updates conditioning with dictionary of decoder outputs."""
-    conditioning = core.copy_if_tf_function(conditioning)
-    x = self.decode(conditioning)
-    outputs = nn.split_to_dict(x, self.output_splits)
+  def call(self, *inputs, **unused_kwargs):
+    """Splits a single output tensor into a dictionary of output tensors."""
+    output = self.compute_output(*inputs)
+    return nn.split_to_dict(output, self.output_splits)
 
-    if isinstance(outputs, dict):
-      conditioning.update(outputs)
-    else:
-      raise ValueError('Decoder must output a dictionary of signals.')
-    return conditioning
-
-  def decode(self, conditioning):
-    """Takes in conditioning dictionary, returns dictionary of signals."""
+  def compute_output(self, *inputs):
+    """Runs network that takes multiple tensors and outputs a single tensor."""
     raise NotImplementedError
 
 
 @gin.register
-class RnnFcDecoder(Decoder):
+class RnnFcDecoder(OutputSplitsLayer):
   """RNN and FC stacks for f0 and loudness."""
 
   def __init__(self,
@@ -66,10 +68,10 @@ class RnnFcDecoder(Decoder):
                layers_per_stack=3,
                input_keys=('ld_scaled', 'f0_scaled', 'z'),
                output_splits=(('amps', 1), ('harmonic_distribution', 40)),
-               name=None):
-    super().__init__(output_splits=output_splits, name=name)
+               **kwargs):
+    super().__init__(
+        input_keys=input_keys, output_splits=output_splits, **kwargs)
     stack = lambda: nn.FcStack(ch, layers_per_stack)
-    self.input_keys = input_keys
 
     # Layers.
     self.input_stacks = [stack() for k in self.input_keys]
@@ -77,14 +79,8 @@ class RnnFcDecoder(Decoder):
     self.out_stack = stack()
     self.dense_out = tfkl.Dense(self.n_out)
 
-    # Backwards compatability.
-    self.f_stack = self.input_stacks[0] if len(self.input_stacks) >= 1 else None
-    self.l_stack = self.input_stacks[1] if len(self.input_stacks) >= 2 else None
-    self.z_stack = self.input_stacks[2] if len(self.input_stacks) >= 3 else None
-
-  def decode(self, conditioning):
+  def compute_output(self, *inputs):
     # Initial processing.
-    inputs = [conditioning[k] for k in self.input_keys]
     inputs = [stack(x) for stack, x in zip(self.input_stacks, inputs)]
 
     # Run an RNN over the latents.
