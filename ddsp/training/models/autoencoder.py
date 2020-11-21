@@ -36,16 +36,15 @@ class Autoencoder(Model):
     self.processor_group = processor_group
     self.loss_objs = ddsp.core.make_iterable(losses)
 
-  def encode(self, features, training=True):
+  def encode(self, inputs, training=True):
     """Get conditioning by preprocessing then encoding."""
+    features = {}
+    features.update(inputs)
     if self.preprocessor is not None:
-      conditioning = self.preprocessor(features, training=training)
-    else:
-      conditioning = features
+      features.update(self.preprocessor(inputs, training=training))
     if self.encoder is not None:
-      z_dict = self.encoder(conditioning)
-      conditioning.update(z_dict)
-    return conditioning
+      features.update(self.encoder(features))
+    return features
 
   def decode(self, conditioning, training=True):
     """Get generated audio by decoding than processing."""
@@ -56,10 +55,10 @@ class Autoencoder(Model):
     """Extract audio output tensor from outputs dict of call()."""
     return self.processor_group.get_signal(outputs)
 
-  def call(self, features, training=True):
+  def call(self, inputs, training=True):
     """Run the core of the network, get predictions and loss."""
-    conditioning = self.encode(features, training=training)
-    processor_inputs = self.decoder(conditioning, training=training)
+    features = self.encode(inputs, training=training)
+    processor_inputs = self.decoder(features, training=training)
     outputs = self.processor_group.get_controls(processor_inputs)
     outputs['audio_synth'] = self.processor_group.get_signal(outputs)
     if training:
